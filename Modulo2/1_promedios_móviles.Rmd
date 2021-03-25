@@ -1,0 +1,146 @@
+---
+title: "Promedios móviles"
+author: "Betsy Torres"
+date: "9/10/2020"
+output: html_document
+---
+
+```{r librerias, eval=TRUE,message=FALSE,include=FALSE}
+library(PerformanceAnalytics)
+library(quantmod)
+library(lubridate)
+library(bizdays)
+
+# quito días festivos y fines de semana
+library(Rfast)
+create.calendar("Mexico/ANBIMA",holidaysANBIMA,weekdays = c("saturday","sunday"))
+bizdays.options$set(default.calendar="Mexico/ANBIMA")
+
+#Bajo la informacion
+datos <- new.env()
+clave<-"CEMEXCPO.MX"
+getSymbols(clave,from="2016-01-01", to=today(), warnings ="FALSE", env = datos)
+activo<-datos[[clave]]
+precio<-activo[,6]
+rendimiento<- na.omit(diff(log(precio)))
+assign(clave, precio)
+
+# función que saca el promedio móvil
+mav <- function(x,n){filter(x,rep(1/n,n), sides=1)} 
+mavback <- function(x,n){ filter(x, c(0, rep(1/n,n)), sides=1) }
+
+```
+
+Eñ comportamiento real del activo considerando la primera estimacion de la varianza para cada caso es la raiz del rendimiento al cuadrado
+
+$$\sigma_i=\sqrt{R_i^2}$$
+```{r Reales, message=FALSE, warning=FALSE, echo=FALSE}
+# echo esocnde el codigo pero no lo que se va a graficar
+
+
+var_real<- rendimiento^2 #al cuadrado porque hay rendimientos negativos
+vol_real<-sqrt(var_real) 
+
+#serie de tiempo que tendrá toda la información real
+# se pone -vol_real para ver la volatilidad como espejo
+real<- merge.xts(rendimiento, vol_real, -vol_real)
+names(real)<- c("Rendimiento","Vol Positiva", "Vol negativa")
+#En la gráfica se puede onb
+plot(real, legend.loc = "bottomright", main = "Volatilidades reales", lwd = 1)
+```
+
+Con esta información vamos a efectuar estimaciones de l avarianza, considerando valores de $m$. Tomaremos $m$ igual a 5,10, 20 y 30, después seleccionaremos el valor de $m$ que mejor ajuste de acuerdo a la RMSE.
+
+```{r Estimación_Varianza, message=FALSE, warning=FALSE, echo=FALSE}
+
+# n equvale a los días que debemos tener en cuenta. puede camiar a las "m" que se quieran. 
+var_est5 <- xts(mavback(var_real, n=5 ), order.by = date(var_real))
+var_est10<- xts(mavback(var_real, n=10), order.by = date(var_real))
+var_est20<- xts(mavback(var_real, n=20), order.by = date(var_real))
+var_est40<- xts(mavback(var_real, n=40), order.by = date(var_real))
+
+var_est<-merge.xts(var_est5, var_est10, var_est20, var_est40)
+
+names(var_est)<-c("M5", "M10", "M20", "M40")
+
+plot(var_est, legend.loc=("topright"), main="Estimaciones de la Varianza", lwd= 1)
+```
+
+Analizar las diferencias de cada una de estas estimaciones con el valor real de la varianza. Esto nos ayudará a degfinir "m" óptima.
+
+```{r Diferencias de Varianzas, message=FALSE, warning=FALSE, echo=FALSE}
+dif_est<-merge.xts((var_real-var_est5)^2, (var_real-var_est10)^2,(var_real-var_est20)^2,(var_real-var_est40)^2)
+
+# No ponemos d "m" ya que el caracter alfanimerico me causa error al momento de sacar el "M" optimo
+names(dif_est)<-c("5","10","20", "40")
+plot(dif_est, main="Diferencias de estimación", legend.loc="top", lwd=1)
+
+```
+
+Para seleccionar el valor óptimo de $m$ usamos la RMSE.
+
+$$RMSE= \sqrt{\frac{1}{H}\sum_{i=1}^{n}[R_i^2-\sigma_i2^]}$$
+
+
+```{r RMSE, message=FALSE, warning=FALSE, echo=FALSE}
+#Ya no necesito la serie de tiempo, sino el promedio de cada serie de tiempo que he calculado
+
+RMSE<- as.data.frame(sqrt(colMeans(na.omit(dif_est))))
+names(RMSE)<- c("Raiz Media de los Errores al cuadrado (RMSE)")
+
+```
+
+De todos los valores de RMSE vamos a seleccionar el menor y ese valor nos va a otrgar el valor de $m$ que mejor se ajusta a los datos que tenemos.
+
+```{r obtención, message=FALSE, warning=FALSE, echo=FALSE}
+# obtenemos m óptima
+
+m_opt<-subset(RMSE, RMSE==min(RMSE))
+m<- as.numeric(row.names(m_opt))
+```
+
+Resulta que el valor de $m$ óptimo será *m* `r m`
+
+De todas las estimaciones vamos a usar la óptima y compararla con la real
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+if(m==5){var_opt<- var_est5}
+if(m==10){var_opt<- var_est10}
+if(m==20){var_opt<- var_est20}
+if(m==40){var_opt<- var_est40}
+
+resultados<-merge.xts(vol_real, sqrt(var_opt))
+
+plot(resultados, legend.loc=("top"), main = "Resultados",lwd=1)
+```
+
+
+ahora efectuaremos estimaciones para la volaatilidad para esto, la primera estimación que haremos de la varianza tendrá que considerar los útimos $m$ días de información disponible (realmente observada)
+
+```{r Est_Futuro, message=FALSE, warning=FALSE, echo=FALSE}
+#Definimos cántos dias de estimación quiero
+d<-10
+# aquí estamos diciendo que quiero tomar 1 a d días
+dias<-seq(1:d)
+n<-nrow(var_real)
+
+var_fut<-matrix(0,m+d,1)
+# de la posición 1 a la m, va a llenar a con varianza real
+var_fut[1:m,1]<- var_real[(n-m+1):n,1]
+
+for(i in 1:d){
+  var_fut[m+i,1]<-na.omit(mav(var_fut[i:(m-1+i),1],m))
+  }
+
+fechas_est<-date(var_real[n,1])+1:d
+vol_est_fut<-as.data.frame(sqrt(var_fut[(m+1):(m+d),1]))
+names(vol_est_fut)<-c("Vol_Estimada")
+vol_est_fut<-xts(vol_est_fut,order.by = fechas_est)
+plot(vol_est_fut, main="Volatilidad Futura Estimada")
+
+```
+
+
+
+**Tarea**
+Modificar este código para tener 10 estimaciones de días hábiles

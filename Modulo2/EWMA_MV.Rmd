@@ -1,0 +1,124 @@
+---
+title: "EWMA"
+author: "Ana Paula Giusti"
+date: "3/20/2020"
+output: html_document
+---
+
+```{r librerias, message=FALSE, warning=FALSE, echo=FALSE}
+library(PerformanceAnalytics)
+library(quantmod)
+library(lubridate)
+library(Rfast)
+```
+
+```{r Datos, message=FALSE, warning=FALSE, echo=FALSE}
+clave <- "GFNORTEO.MX"
+datos <- new.env()
+getSymbols(clave, from="2016-01-01", to=today(), warnings="FALSE", env=datos)
+activo <- datos[[clave]]
+precio <- activo[,6]
+assign(clave, precio) 
+```
+
+El objetivo del trabajo es determinar el parametro lambda para la estimación de la varianza de un conjunto de datos, los cuales corresponden al rendimiento del activo `r clave`. Usando la informacion desde año 2016.(no hay problema de tener desde hace tantos años, porque se pondera exponencialmente) Estos datos son:
+
+```{r graf_rend, message=FALSE, warning=FALSE, echo=FALSE}
+Rendimiento<-na.omit(diff(log(precio)))
+plot(Rendimiento, main=paste("Rend",clave),col="blue", lwd=0.5)
+
+```
+
+La volatilidad y la varianza realmente observada equivale al rendimiento al cuadrado y su raiz respectiva. El cual esta dado por este por la ecuación:
+
+$$ \sigma_i = \sqrt{R_i^2} $$
+
+Estos resultados del comportamiento del valor real de la varianza y la volatilidad los podemos apreciar en la siguiente gráfica.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+Var_Real<-Rendimiento^2
+Vol_Real<-sqrt(Var_Real)
+Real<-merge.xts(Rendimiento,Vol_Real,-Vol_Real) #positivo y negativo (espejo)
+names(Real)<-c("Rendimiento","Vol_Real","-Vol_Real")
+plot(Real,legend.loc = "top", main = "Volres observados",lwd=0.5)
+```
+
+Con está información contruiremos estimaciones para la varianza, determinando primero quien es el valor óptimo de lambda, para la serie que estamos utilizando. El modelo de estimación que estamos usando es EWMA.
+(platicar de modelo ewma)
+
+Cuya ecuación esta dada por:
+$$ \sigma_t^2 = (1-\lambda)R_{t-1}^2 + \lambda\sigma_{t-1}^2$$
+El valor óptimo de $\lambda$ resulta de un proceso de estimación de **Máxima verosimilitud**, el cual consiste en econtrar el valor de $\sigma_{t-1}$ que maximiza la función de la verosimilitud. Es decir:
+
+$$\max_{\sigma_t^2}\sum[-ln(\sigma_t^2)-\frac{R_t^2}{\sigma_t^2}]  $$
+Es un proceso iterativo, solo encontrar un valor
+En garch o arch no s epuede iterativo, debes enocOntrar tres parametros (en 1,1), cada vez más.
+
+Sujeto a que se cumpla que el valor de $\sigma_t^2$ de acuerdo con el modelo EWMA
+
+```{r Lambda, message=FALSE, warning=FALSE, include=FALSE}
+#ESTE ES EL CODIGO MAS IMPORTANTE
+#Codigo para determinar el valor optimo del parametro del modelo
+n<-nrow(Var_Real) #cuantos dias de info tengo
+Var_Est<- matrix(0,n-1,1) 
+Func<-matrix(0,n-1,1) #funcion de maxima verosimilitud
+
+#variables auxiliares (con las que inicia proceso iterativo)
+FMaxAct<-0 #lo que el nuevo
+FMaxAnt<-0 #siempre comparar con este para ver si es mayor (anterior)
+Loptimo<-0
+
+Var_Est[1,1]<-Var_Real[1,1] #para iniciar proceso de iterac
+a<-seq(0.1,0.99,by=0.01) #(puede que este entre 0.6 a 0.9)
+
+#L sera un valor de la secuencia a
+for (L in a) {
+  for (i in 2:(n-1)) {
+    Var_Est[i,1]=(1-L)*Var_Real[i-1,1]+L*Var_Est[i-1,1]
+    Func[i,1]=-log(Var_Est[i,1])-Var_Real[i,1]/Var_Est[i,1]
+  }
+  FMaxAct=sum(Func)
+  #print(L)
+  #print(FMaxAct) buscas el mayor
+  #verosimilitud es la probabilidad de ocurrencia, la maxima con el valor de lambda estimada
+  if (FMaxAct>FMaxAnt) {
+    FMaxAnt=FMaxAct
+    FMax=FMaxAct
+    Loptimo=L
+  } else{
+      FMax=FMaxAnt
+  }
+  print(Loptimo)
+  print(FMax)
+}
+
+```
+
+El valor ótimo de $\lambda$ esta dado por **`r optimo`** y el valor maximo de la funcion de  verosimilitud es **`r FMax`**. Esto implica que para el rendimiento de **`r clave`**, la varianza puede ser modela como:
+
+$$ \sigma_t^2 = `r 1- Loptimo`R_{t-1}^2 + `r Loptimo`sigma_{t-1}^2$$
+
+Con este modelo podemos estimaciones futuras de varianza
+
+```{r estimacion, message=FALSE, warning=FALSE}
+d<- 10 #cuantas quiero
+
+#TAREA, ESTIMAR FECHAS
+#Fechas_est<-date(Var_Real[n-1]+1:d)
+#Fechas_selec<-biz(...) contener las fechas que son habiles
+# d_h<-nrow(Fechas_selec)
+#d_h estimaciones
+
+Var_Fut<-matrix(0,d,1)
+Var_Fut[1,1]<-Var_Real[1,1]
+
+for (i in 2:d) {
+  Var_Fut[i,1]=(1-Loptimo)*Var_Real[i-1,1]+Loptimo*Var_Fut[i-1,1]
+}
+Vol_Est_Fut<-as.data.frame(sqrt(Var_Fut))
+Fechas_est<-date(Var_Real[n,1])+1:d
+Vol_Est_Fut<-xts(Vol_Est_Fut, order.by = Fechas_est)
+names(Vol_Est_Fut)<-c("Vol_Est_Fut")
+plot(Vol_Est_Fut, main="Vol.Futura")
+```
+
